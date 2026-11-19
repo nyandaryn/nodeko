@@ -80,11 +80,11 @@ recent errors, events. It deliberately does nothing else.
 ```mermaid
 flowchart LR
   subgraph servers["Your servers"]
-    A1["nodeko-agent<br/><sub>systemd · docker · pm2 · journal</sub>"]
+    A1["nodeko-agent<br/>systemd · docker · pm2"]
     A2["nodeko-agent"]
   end
   subgraph hub["Hub (one small box)"]
-    H["nodeko hub<br/><sub>Bun · SQLite</sub>"]
+    H["nodeko hub<br/>Bun · SQLite"]
   end
   A1 -- "WebSocket + end-to-end<br/>encrypted channel" --> H
   A2 -- " " --> H
