@@ -181,6 +181,38 @@ const MIGRATIONS: string[] = [
   CREATE INDEX events_svc ON events(service_id, ts);
   CREATE INDEX events_srv ON events(server_id, ts);
   `,
+  // 2: база знаний — заметки (markdown) и все их версии
+  `
+  CREATE TABLE notes(
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    servers_json TEXT NOT NULL DEFAULT '[]',
+    services_json TEXT NOT NULL DEFAULT '[]',
+    body TEXT NOT NULL,
+    rev INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT
+  );
+  CREATE TABLE note_revisions(
+    note_id TEXT NOT NULL,
+    rev INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    actor TEXT,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    tags_json TEXT NOT NULL,
+    servers_json TEXT NOT NULL,
+    services_json TEXT NOT NULL,
+    body TEXT NOT NULL,
+    PRIMARY KEY(note_id, rev)
+  ) WITHOUT ROWID;
+  `,
 ];
 
 function open(): Database {

@@ -8,6 +8,7 @@ import { agentWebsocket, upgradeAgent } from "../agents.ts";
 import { config } from "../config.ts";
 import { errMsg, log } from "../log.ts";
 import { mcpFetch } from "../mcp.ts";
+import { NoteError } from "../notes.ts";
 import type { AgentWsData } from "../model.ts";
 import { ServerError } from "../servers.ts";
 import { ServiceError } from "../services.ts";
@@ -51,6 +52,7 @@ function errorResponse(e: unknown): Response {
   if (e instanceof CheckError || e instanceof ServiceError || e instanceof ServerError || e instanceof ValidationError || e instanceof PasskeyError) {
     return json({ error: e.message, code: "bad_request" }, 400);
   }
+  if (e instanceof NoteError) return json({ error: e.message, code: e.code }, e.code === "not_found" ? 404 : e.code === "conflict" ? 409 : 400);
   if (e instanceof SyntaxError) return json({ error: "тело запроса — не JSON", code: "bad_request" }, 400);
   log.error("http: необработанная ошибка", { error: errMsg(e) });
   return json({ error: "внутренняя ошибка", code: "internal" }, 500);

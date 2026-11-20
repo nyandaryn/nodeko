@@ -4,6 +4,7 @@ import { BellOff, ChevronRight, CircleDot, Clock3, Cpu, Eraser, MemoryStick, Scr
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { Heartbeat } from "../components/Heartbeat.tsx";
+import { LinkedNotes } from "../components/LinkedNotes.tsx";
 import { RangePicker } from "../components/RangePicker.tsx";
 import { ChartCard, TimeChart } from "../components/TimeChart.tsx";
 import { Button } from "../components/ui/Button.tsx";
@@ -165,6 +166,8 @@ function Overview({ s }: { s: ServiceDetail }) {
           ].filter((r) => r[1] != null && r[1] !== "") as Parameters<typeof KV>[0]["rows"]}
         />
       </Section>
+
+      <LinkedNotes notes={s.linkedNotes} />
 
       {s.notes && (
         <Section title="Заметки">

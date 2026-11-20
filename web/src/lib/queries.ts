@@ -5,6 +5,9 @@ import type {
   EventItem,
   LogItem,
   MetricsRange,
+  Note,
+  NoteRevisionItem,
+  NoteSummary,
   Overview,
   PasskeyItem,
   ServerDetail,
@@ -25,6 +28,8 @@ export const queryClient = new QueryClient({
     onError: (e, q) => {
       if (q.state.data !== undefined || q.queryKey[0] === "auth") return;
       if (e instanceof ApiErr && e.status === 401) return;
+      // «заметки нет» страница показывает сама (в том числе «удалена — восстановить из истории»)
+      if (e instanceof ApiErr && e.status === 404 && q.meta?.quiet404) return;
       toast(`Не удалось загрузить: ${errMsg(e)}`, "error");
     },
   }),
@@ -52,6 +57,10 @@ export const qk = {
   tokens: ["tokens"] as const,
   sessions: ["sessions"] as const,
   passkeys: ["passkeys"] as const,
+  notes: (q = "") => ["notes", "list", q] as const,
+  note: (id: string) => ["notes", "item", id] as const,
+  noteRevisions: (id: string) => ["notes", "revisions", id] as const,
+  noteRevision: (id: string, rev: number) => ["notes", "revision", id, rev] as const,
 };
 
 export const useAuth = () =>
@@ -145,6 +154,51 @@ export const useSettings = () => useQuery({ queryKey: qk.settings, queryFn: () =
 export const useTokens = () => useQuery({ queryKey: qk.tokens, queryFn: () => get<TokenItem[]>("/api/v1/tokens") });
 export const useSessions = () => useQuery({ queryKey: qk.sessions, queryFn: () => get<SessionItem[]>("/api/v1/sessions") });
 export const usePasskeys = () => useQuery({ queryKey: qk.passkeys, queryFn: () => get<PasskeyItem[]>("/api/v1/passkeys") });
+
+// ---------- база знаний ----------
+
+/** Список заметок; q — поиск на хабе (со сниппетом и релевантностью). */
+export const useNotes = (q = "") =>
+  useQuery({
+    queryKey: qk.notes(q),
+    queryFn: () => get<NoteSummary[]>(`/api/v1/notes${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+    placeholderData: q ? keepPreviousData : undefined,
+    staleTime: 15_000,
+  });
+
+export const useNote = (id: string | undefined) =>
+  useQuery({
+    queryKey: qk.note(id ?? ""),
+    queryFn: () => get<Note>(`/api/v1/notes/${encodeURIComponent(id!)}`),
+    enabled: !!id,
+    meta: { quiet404: true },
+    staleTime: 15_000,
+  });
+
+export const useNoteRevisions = (id: string | undefined, enabled = true) =>
+  useQuery({
+    queryKey: qk.noteRevisions(id ?? ""),
+    queryFn: () => get<NoteRevisionItem[]>(`/api/v1/notes/${encodeURIComponent(id!)}/revisions`),
+    enabled: !!id && enabled,
+    meta: { quiet404: true },
+  });
+
+export const useNoteRevision = (id: string, rev: number | undefined) =>
+  useQuery({
+    queryKey: qk.noteRevision(id, rev ?? -1),
+    queryFn: () => get<Note>(`/api/v1/notes/${encodeURIComponent(id)}/revisions/${rev}`),
+    enabled: rev != null && Number.isInteger(rev),
+    staleTime: Infinity,
+  });
+
+/** После изменения заметки: списки, сама заметка, история и привязки в деталях серверов/сервисов */
+export function invalidateNotes() {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["notes"] }),
+    queryClient.invalidateQueries({ queryKey: ["server"] }),
+    queryClient.invalidateQueries({ queryKey: ["service"] }),
+  ]);
+}
 
 /** Инвалидация всего, что показывает дерево/детали после мутации */
 export function invalidateLive() {

@@ -1,11 +1,13 @@
 import { createMcpHandler, McpServer, type AuthInfo } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { MetricsRange, SeriesBase, ServerSummary, ServiceSummary } from "../shared/api.ts";
+import { NOTE_KINDS, type MetricsRange, type NoteKind, type SeriesBase, type ServerSummary, type ServiceSummary } from "../shared/api.ts";
+import { NOTE_KIND_LABEL, noteLinks } from "../shared/notes.ts";
 import { verifyToken } from "./auth/core.ts";
 import { createCheck, deleteCheck, updateCheck } from "./checks.ts";
 import { HUB_VERSION } from "./config.ts";
 import { addEvent, listEvents } from "./events.ts";
 import { errMsg, log } from "./log.ts";
+import { createNote, deleteNote, getNote, getRevision, listNotes, listRevisions, noteIndex, patchNote } from "./notes.ts";
 import {
   checkList,
   checkResults,
@@ -27,12 +29,27 @@ import { patchSettings, publicSettings } from "./settings.ts";
  * токен со scope read видит только чтение, admin — ещё и настройку.
  */
 
-const INSTRUCTIONS = `nodeko — мониторинг серверов пользователя и сервисов на них.
+const BASE_INSTRUCTIONS = `nodeko — мониторинг серверов пользователя и сервисов на них + база знаний об этой инфраструктуре.
 Сервер (id — slug) → сервисы (id — число; kind: systemd | systemd-user | docker | pm2; role service|job) → HTTP/TCP-проверки.
 Статусы: ok, warn (деградация/пороги/рестарт), down (упал/недоступен), stopped (намеренно остановлен), unknown (нет данных), pending (агент не подключён).
 Начинай с nodeko_overview (issuesOnly=true — только проблемы), затем детали: nodeko_server / nodeko_service, логи ошибок — nodeko_logs, история — nodeko_events, графики — nodeko_metrics.
 Времена — ms epoch UTC, память/диск — байты, скорости — байт/с, CPU — % (у сервисов — % одного ядра).
-Изменения (нужен admin-токен) пишутся в журнал событий от имени токена.`;
+Изменения (нужен admin-токен) пишутся в журнал событий от имени токена.
+
+База знаний — markdown-заметки: где и как развёрнут проект (сервер, каталог, юниты, порты, домены, деплой, откат), что стоит на сервере, процедуры и грабли.
+Перед работой с сервером или проектом (деплой, диагностика, правка конфигов) прочитай его заметку: nodeko_notes (список/поиск; server=/service= — привязанные), nodeko_note (текст). nodeko_server и nodeko_service тоже показывают linkedNotes.
+Узнал новое или заметка устарела — поправь её через nodeko_write_note: сначала прочитай (нужен baseRev), правь точечно (edits), пиши фактами с датой. Ссылка на другую заметку — [[id]].
+Секретов (паролей, токенов, ключей) в заметках не бывает и записать их нельзя — пиши, где секрет лежит.`;
+
+/** Инструкции с актуальным оглавлением базы знаний (MCP stateless — собирается на каждый запрос). */
+function instructions(): string {
+  const idx = noteIndex();
+  if (!idx.length) return `${BASE_INSTRUCTIONS}\nЗаметок пока нет.`;
+  const by = new Map<NoteKind, string[]>();
+  for (const n of idx) by.set(n.kind, [...(by.get(n.kind) ?? []), n.id]);
+  const lines = NOTE_KINDS.filter((k) => by.has(k)).map((k) => `- ${NOTE_KIND_LABEL[k]}: ${by.get(k)!.join(", ")}`);
+  return `${BASE_INSTRUCTIONS}\nЗаметки (id):\n${lines.join("\n")}`;
+}
 
 const RANGE = z.enum(["1h", "6h", "24h", "7d", "30d", "1y"]);
 
@@ -150,7 +167,7 @@ function resolveService(args: { id?: number; server?: string; name?: string }): 
 export function buildMcpServer(): McpServer {
   const server = new McpServer(
     { name: "nodeko", title: "nodeko", version: HUB_VERSION },
-    { capabilities: { tools: { listChanged: false } }, instructions: INSTRUCTIONS },
+    { capabilities: { tools: { listChanged: false } }, instructions: instructions() },
   );
 
   const tool = <A,>(name: string, admin: boolean, fn: (args: A, caller: Caller) => unknown) =>
@@ -342,7 +359,7 @@ export function buildMcpServer(): McpServer {
     "nodeko_update_services",
     {
       title: "Изменить сервисы",
-      description: "Пакетно поменять отображаемое имя, группу в дереве, отслеживание, уведомления, порядок, заметки.",
+      description: "Пакетно поменять отображаемое имя, группу в дереве, отслеживание, уведомления, порядок, короткое примечание (notes; подробности — в базе знаний, nodeko_write_note).",
       inputSchema: z.object({ updates: z.array(ServicePatch).min(1).max(200) }),
       annotations: RW,
     },
@@ -453,6 +470,166 @@ export function buildMcpServer(): McpServer {
       const s = patchSettings(a.patch as never);
       addEvent({ level: "info", type: "config.settings", title: "Изменены настройки", message: Object.keys(a.patch).join(", "), actor: `token:${c.name}` });
       return publicSettings(s);
+    }),
+  );
+
+  // ---------- база знаний ----------
+
+  const Kind = z.enum(NOTE_KINDS as [NoteKind, ...NoteKind[]]);
+
+  server.registerTool(
+    "nodeko_notes",
+    {
+      title: "Заметки: список и поиск",
+      description:
+        "База знаний об инфраструктуре. Без q — оглавление (id, kind, заголовок, сводка, привязки); с q — поиск по словам (подстрока, без учёта регистра; все слова должны найтись) со сниппетом. Фильтры: kind, tag, server (привязана к серверу или его сервисам), service (\"<server>/<имя>\").",
+      inputSchema: z.object({
+        q: z.string().optional().describe("слова для поиска, напр. \"bun откат\""),
+        kind: Kind.optional().describe("server — серверы, project — проекты, runbook — процедуры, reference — справка"),
+        tag: z.string().optional(),
+        server: z.string().optional(),
+        service: z.string().optional().describe("<server>/<имя сервиса>"),
+        limit: z.number().int().min(1).max(200).optional().describe("по умолчанию 100"),
+      }),
+      annotations: RO,
+    },
+    tool("nodeko_notes", false, (a: { q?: string; kind?: NoteKind; tag?: string; server?: string; service?: string; limit?: number }) =>
+      listNotes(a)
+        .slice(0, a.limit ?? 100)
+        .map((n) => ({
+          id: n.id,
+          kind: n.kind,
+          title: n.title,
+          summary: n.summary || undefined,
+          tags: n.tags.length ? n.tags : undefined,
+          servers: n.servers.length ? n.servers : undefined,
+          services: n.services.length ? n.services : undefined,
+          rev: n.rev,
+          updatedAt: n.updatedAt,
+          size: n.size,
+          snippet: n.snippet,
+          score: n.score,
+        })),
+    ),
+  );
+
+  server.registerTool(
+    "nodeko_note",
+    {
+      title: "Заметка",
+      description:
+        "Текст заметки (markdown) с метаданными, текущим статусом привязанных серверов/сервисов и ссылками [[id]]. rev — прочитать старую версию; history=true — список версий (кто и когда менял).",
+      inputSchema: z.object({
+        id: z.string(),
+        rev: z.number().int().min(1).optional(),
+        history: z.boolean().optional(),
+      }),
+      annotations: RO,
+    },
+    tool("nodeko_note", false, (a: { id: string; rev?: number; history?: boolean }) => {
+      if (a.history) return listRevisions(a.id);
+      if (a.rev) return getRevision(a.id, a.rev);
+      const n = getNote(a.id);
+      if (!n) {
+        let hint = "";
+        try {
+          const last = listRevisions(a.id)[0];
+          if (last?.deleted) hint = ` — удалена (${last.actor ?? "?"}, ${new Date(last.ts).toISOString()}); последняя версия — rev=${last.rev - 1}`;
+        } catch {}
+        throw new Error(`нет заметки ${a.id}${hint}. Список — nodeko_notes`);
+      }
+      const o = overview(true);
+      const linkedStatus = [
+        ...n.servers.map((id) => {
+          const s = o.servers.find((x) => x.id === id);
+          return { ref: id, status: s?.status ?? "нет в мониторинге", reason: s?.statusReason ?? undefined };
+        }),
+        ...n.services.map((ref) => {
+          const [srv, ...rest] = ref.split("/");
+          const name = rest.join("/").toLowerCase();
+          const s = o.services.find((x) => x.serverId === srv && (x.name.toLowerCase() === name || x.displayName?.toLowerCase() === name));
+          return { ref, serviceId: s?.id, status: s?.status ?? "нет в мониторинге", reason: s?.statusReason ?? undefined };
+        }),
+      ];
+      const links = noteLinks(n.body).map((id) => ({ id, exists: !!getNote(id) }));
+      return { ...n, linkedStatus, links: links.length ? links : undefined };
+    }),
+  );
+
+  const NoteFields = {
+    kind: Kind.optional().describe("обязательно при создании"),
+    title: z.string().optional().describe("обязательно при создании"),
+    summary: z.string().optional().describe("одна строка: что внутри и когда читать (по ней агенты решают, открывать ли заметку)"),
+    tags: z.array(z.string()).optional(),
+    servers: z.array(z.string()).optional().describe("id серверов nodeko"),
+    services: z.array(z.string()).optional().describe("\"<server>/<имя сервиса>\""),
+  };
+
+  server.registerTool(
+    "nodeko_write_note",
+    {
+      title: "Создать/изменить заметку",
+      description:
+        "Нет заметки с таким id — создаёт (нужны kind, title, body). Есть — изменяет: обязателен baseRev (версия, которую ты прочитал; изменили раньше — ошибка, перечитай). Текст: body — целиком, или edits — точечные замены (old встречается ровно один раз). Метаполя меняются, только если переданы (массивы — целиком). Секреты отклоняются. Все версии сохраняются.",
+      inputSchema: z.object({
+        id: z.string().describe("[a-z0-9][a-z0-9._-]*"),
+        baseRev: z.number().int().optional(),
+        ...NoteFields,
+        body: z.string().optional().describe("markdown целиком"),
+        edits: z
+          .array(z.object({ old: z.string(), new: z.string() }))
+          .optional()
+          .describe("точечные замены по порядку"),
+      }),
+      annotations: RW,
+    },
+    tool(
+      "nodeko_write_note",
+      true,
+      (
+        a: {
+          id: string;
+          baseRev?: number;
+          kind?: NoteKind;
+          title?: string;
+          summary?: string;
+          tags?: string[];
+          servers?: string[];
+          services?: string[];
+          body?: string;
+          edits?: { old: string; new: string }[];
+        },
+        c,
+      ) => {
+        const actor = `token:${c.name}`;
+        const { id, baseRev, edits, ...fields } = a;
+        const cur = getNote(id);
+        let n;
+        if (!cur) {
+          if (baseRev !== undefined) throw new Error(`заметки ${id} нет (удалена или переименована?) — без baseRev она будет создана заново`);
+          if (edits) throw new Error("edits — только для существующей заметки; при создании передайте body");
+          if (!fields.kind || !fields.title || fields.body === undefined) throw new Error("новая заметка: нужны kind, title и body");
+          n = createNote({ id, kind: fields.kind, title: fields.title, summary: fields.summary, tags: fields.tags, servers: fields.servers, services: fields.services, body: fields.body }, actor);
+          return { action: "created", id: n.id, rev: n.rev, size: n.size };
+        }
+        if (baseRev === undefined) throw new Error(`заметка ${id} уже есть (версия ${cur.rev}) — прочитайте её и передайте baseRev`);
+        n = patchNote(id, { baseRev, edits, ...fields }, actor);
+        return { action: n.rev === cur.rev ? "unchanged" : "updated", id: n.id, rev: n.rev, size: n.size };
+      },
+    ),
+  );
+
+  server.registerTool(
+    "nodeko_delete_note",
+    {
+      title: "Удалить заметку",
+      description: "Удалить заметку (история версий остаётся, восстановить — прочитать rev и создать заново). baseRev обязателен.",
+      inputSchema: z.object({ id: z.string(), baseRev: z.number().int() }),
+      annotations: { ...RW, destructiveHint: true },
+    },
+    tool("nodeko_delete_note", true, (a: { id: string; baseRev: number }, c) => {
+      deleteNote(a.id, `token:${c.name}`, a.baseRev);
+      return { ok: true };
     }),
   );
 

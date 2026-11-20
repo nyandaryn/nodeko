@@ -10,6 +10,12 @@ import type {
   EventItem,
   LogItem,
   MetricsRange,
+  Note,
+  NoteCreateBody,
+  NoteKind,
+  NotePatchBody,
+  NoteRef,
+  NoteRevisionItem,
   PasskeyItem,
   ServerDetail,
   ServerSummary,
@@ -20,6 +26,19 @@ import type {
   Status,
   TokenItem,
 } from "../src/shared/api.ts";
+import {
+  applyEdits,
+  checkBody,
+  checkNoteId,
+  checkServers,
+  checkServices,
+  checkSummary,
+  checkTags,
+  checkTitle,
+  isNoteKind,
+  NoteError,
+  searchNotes,
+} from "../src/shared/notes.ts";
 import type { ServiceKind, ServiceState } from "../src/shared/protocol.ts";
 
 const PORT = Number(process.env.PORT ?? 4179);
@@ -196,6 +215,7 @@ function addSvc(
     recentErrors: [],
     recentEvents: [],
     errorsHourly: Array.from({ length: 24 }, () => 0),
+    linkedNotes: [],
     ...o,
   };
   services.push(s);
@@ -506,6 +526,7 @@ function detail(s: Srv): ServerDetail {
     remoteAddr: s.enrolled ? `${s.id === "pico" ? "127.0.0.1" : "203.0.113." + (10 + s.sort)}` : null,
     connectedAt: s.enrolled ? NOW() - 5 * H : null,
     rtt: s.enrolled ? (s.id === "pico" ? 1 : 38) : null,
+    linkedNotes: notesForServer(s.id),
   };
 }
 
@@ -528,6 +549,193 @@ function timeline(range: MetricsRange) {
 }
 function series(seed: string, t: number[], base: number, amp: number, max = Infinity, gap = false) {
   return t.map((x, i) => (gap && i > t.length * 0.62 && i < t.length * 0.66 ? null : Math.min(max, +wave(seed, x * 1000, base, amp).toFixed(2))));
+}
+
+// ---------------- notes (база знаний) ----------------
+const KIND_ORDER: NoteKind[] = ["server", "project", "runbook", "reference"];
+const notes = new Map<string, Note>();
+const revisions = new Map<string, { item: NoteRevisionItem; note: Note | null }[]>();
+const sizeOf = (t: string) => new TextEncoder().encode(t).length;
+
+function saveRev(n: Note, deleted = false) {
+  const list = revisions.get(n.id) ?? [];
+  list.unshift({ item: { rev: n.rev, ts: n.updatedAt, actor: n.updatedBy, title: n.title, size: deleted ? 0 : n.size, deleted }, note: deleted ? null : { ...n } });
+  revisions.set(n.id, list);
+}
+
+function seedNote(n: Omit<Note, "rev" | "size" | "createdAt" | "updatedAt" | "updatedBy">, history: { ago: number; by: string; body?: string; title?: string }[]) {
+  let rev = 0;
+  const created = NOW() - history[0]!.ago;
+  for (const h of history) {
+    const body = h.body ?? n.body;
+    const v: Note = { ...n, title: h.title ?? n.title, body, rev: ++rev, size: sizeOf(body), createdAt: created, updatedAt: NOW() - h.ago, updatedBy: h.by };
+    saveRev(v);
+    notes.set(n.id, v);
+  }
+}
+
+seedNote(
+  {
+    id: "atlas",
+    kind: "server",
+    title: "atlas — прод-сервер",
+    summary: "Что крутится на atlas, как туда ходить, общие правила для юнитов и бэкапов.",
+    tags: ["prod", "systemd"],
+    servers: ["atlas"],
+    services: [],
+    body: `Ubuntu 24.04 · 4 CPU · 8 ГБ RAM. SSH-алиас \`atlas\`, пользователь \`deploy\`.
+
+Всё прикладное — **systemd user** (\`systemctl --user\`), reverse-proxy — Caddy (\`/etc/caddy/Caddyfile\`).
+
+## Сервисы
+
+| Сервис | Каталог | Порт | Домен | Заметка |
+|--------|---------|------|-------|---------|
+| \`shop-api\` | \`/home/deploy/shop\` | 4055 | shop.example.com | [[shop]] |
+| \`shop-web\` | ↑ | 4056 | ↑ | ↑ |
+| \`billing-api\` | \`/home/deploy/billing\` | 4070 | billing.example.com | [[billing]] |
+| \`grafana\` | — | 3000 | — | [[grafana]] |
+
+## Правила
+
+- \`ssh atlas '<cmd>'\` не читает \`.bashrc\` — bun по абсолютному пути: \`~/.bun/bin/bun\`.
+- Юниты не в git, лежат в \`~/.config/systemd/user/\`.
+- Бэкапы — таймеры \`*-backup\` ночью; см. [[deploy-rollback]].
+
+> Пароли и ключи сюда не пишем — они в менеджере паролей.
+`,
+  },
+  [{ ago: 40 * D, by: "user:admin" }],
+);
+
+seedNote(
+  {
+    id: "shop",
+    kind: "project",
+    title: "Магазин — прод, staging, выкатка",
+    summary: "Где живёт магазин (API, веб, воркер), как выкатывать и откатывать, известные грабли.",
+    tags: ["deploy", "bun"],
+    servers: ["atlas"],
+    services: ["atlas/shop-api", "atlas/shop-web", "atlas/shop-worker", "atlas/shop-api-staging"],
+    body: `Репозиторий \`example/shop\`, ветка \`main\` — прод, \`dev\` — staging. Сервер — [[atlas]].
+
+## Окружения
+
+| | Прод | Staging |
+|---|---|---|
+| Каталог | \`/home/deploy/shop\` | \`/home/deploy/shop-staging\` |
+| Юниты | \`shop-api\`, \`shop-web\`, \`shop-worker\` | \`shop-api-staging\`, \`shop-web-staging\` |
+| Домен | https://shop.example.com | https://staging.shop.example.com |
+| БД | \`app.db\` (SQLite, WAL) | своя копия |
+
+## Выкатка
+
+\`\`\`sh
+ssh atlas 'cd ~/shop && ./update.sh -a -w'
+\`\`\`
+
+- [x] миграции применяются при старте API
+- [ ] воркер перезапускать отдельно, если менялась очередь
+
+Откат — [[deploy-rollback]]. Секрет подписи вебхуков — в \`.env\` (не здесь).
+
+## Грабли
+
+1. \`update.sh\` без \`-m\` не гоняет миграции.
+2. Staging делит Redis с продом — ~~не чистить~~ чистить только префикс \`stg:\`.
+`,
+  },
+  [
+    { ago: 30 * D, by: "user:admin", title: "Магазин", body: "Репозиторий `example/shop`, ветка `main` — прод.\n" },
+    { ago: 12 * D, by: "token:claude", title: "Магазин — прод и выкатка", body: "Репозиторий `example/shop`, ветка `main` — прод, `dev` — staging.\n\n## Выкатка\n\n```sh\nssh atlas 'cd ~/shop && ./update.sh -a -w'\n```\n" },
+    { ago: 2 * H, by: "token:claude" },
+  ],
+);
+
+seedNote(
+  {
+    id: "deploy-rollback",
+    kind: "runbook",
+    title: "Откат релиза bun-сервиса",
+    summary: "Пошагово: вернуть предыдущий коммит, перезапустить юниты, проверить health.",
+    tags: ["deploy", "bun"],
+    servers: [],
+    services: [],
+    body: `1. Найти предыдущий коммит: \`git log --oneline -5\`.
+2. \`git checkout <коммит> && bun install --frozen-lockfile\`.
+3. \`systemctl --user restart <сервис>\` и проверить \`curl -fsS http://127.0.0.1:<порт>/api/health\`.
+4. Записать в заметку проекта, почему откатывали.
+
+Замена бинаря bun не переключает работающие процессы — нужен рестарт.
+`,
+  },
+  [{ ago: 20 * D, by: "user:admin" }],
+);
+
+seedNote(
+  {
+    id: "billing",
+    kind: "project",
+    title: "Billing — API и кабинет",
+    summary: "Платёжный API и веб-кабинет на atlas; бэкап ночью.",
+    tags: ["deploy"],
+    servers: ["atlas"],
+    services: ["atlas/billing-api", "atlas/billing-web", "atlas/billing-backup"],
+    body: `Сервисы \`billing-api\` (4070) и \`billing-web\` (4071) на [[atlas]], домен billing.example.com.
+
+Выкатка — \`./deploy/update.sh\` из каталога проекта; откат — [[deploy-rollback]].
+`,
+  },
+  [{ ago: 9 * D, by: "user:admin" }],
+);
+
+const noteRef = (n: Note): NoteRef => ({ id: n.id, kind: n.kind, title: n.title, summary: n.summary });
+const noteSummary = (n: Note) => {
+  const { body: _b, createdAt: _c, historic: _h, ...rest } = n;
+  return rest;
+};
+const byKind = (a: Note, b: Note) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || a.id.localeCompare(b.id);
+
+function notesForServer(id: string): NoteRef[] {
+  return [...notes.values()].filter((n) => n.servers.includes(id) || n.services.some((x) => x.startsWith(`${id}/`))).sort(byKind).map(noteRef);
+}
+function notesForService(s: ServiceDetail): NoteRef[] {
+  const key = `${s.serverId}/${s.name}`.toLowerCase();
+  const all = [...notes.values()];
+  const own = all.filter((n) => n.services.some((x) => x.toLowerCase() === key)).sort(byKind);
+  const srv = all.filter((n) => n.kind === "server" && n.servers.includes(s.serverId) && !own.includes(n)).sort(byKind);
+  return [...own, ...srv].map(noteRef);
+}
+
+function noteErr(e: unknown) {
+  if (e instanceof NoteError) return err(e.code === "not_found" ? 404 : e.code === "conflict" ? 409 : 400, e.code, e.message);
+  throw e;
+}
+
+function writeNote(id: string, fields: Partial<NoteCreateBody>, prev: Note | null): Note {
+  if (!isNoteKind(fields.kind ?? prev?.kind)) throw new NoteError("kind: server|project|runbook|reference");
+  const body = checkBody(fields.body ?? prev?.body);
+  const lastRev = revisions.get(id)?.[0]?.item.rev ?? 0;
+  const n: Note = {
+    id,
+    kind: (fields.kind ?? prev?.kind)!,
+    title: checkTitle(fields.title ?? prev?.title),
+    summary: checkSummary(fields.summary ?? prev?.summary),
+    tags: checkTags(fields.tags ?? prev?.tags),
+    servers: checkServers(fields.servers ?? prev?.servers),
+    services: checkServices(fields.services ?? prev?.services),
+    body,
+    rev: lastRev + 1,
+    size: sizeOf(body),
+    createdAt: prev?.createdAt ?? NOW(),
+    updatedAt: NOW(),
+    updatedBy: "user:admin",
+  };
+  if (prev && (["kind", "title", "summary", "body"] as const).every((k) => n[k] === prev[k]) && (["tags", "servers", "services"] as const).every((k) => n[k].join() === prev[k].join())) return prev;
+  notes.set(id, n);
+  saveRev(n);
+  ev(NOW(), "info", `note.${prev ? "updated" : "created"}`, `Заметка «${n.title}» ${prev ? "изменена" : "создана"}`, { message: `${id}, версия ${n.rev}`, actor: "user:admin" });
+  return n;
 }
 
 // ---------------- http ----------------
@@ -690,6 +898,7 @@ Bun.serve({
         ...s,
         recentErrors: logs.filter((l) => l.serviceId === s.id).slice(0, 10),
         recentEvents: events.filter((e) => e.serviceId === s.id).slice(0, 10),
+        linkedNotes: notesForService(s),
       });
     }
 
@@ -744,6 +953,70 @@ Bun.serve({
           .sort((a, b) => b.id - a.id)
           .slice(0, limit),
       );
+    }
+
+    // ---- notes ----
+    if (p === "/api/v1/notes" && m === "GET") {
+      const q = url.searchParams;
+      let list = [...notes.values()];
+      const kind = q.get("kind");
+      const tag = q.get("tag");
+      const server = q.get("server");
+      const service = q.get("service")?.toLowerCase();
+      if (kind) list = list.filter((n) => n.kind === kind);
+      if (tag) list = list.filter((n) => n.tags.includes(tag.toLowerCase()));
+      if (server) list = list.filter((n) => n.servers.includes(server) || n.services.some((x) => x.startsWith(`${server}/`)));
+      if (service) list = list.filter((n) => n.services.some((x) => x.toLowerCase() === service));
+      const text = q.get("q")?.trim();
+      if (text) return json(searchNotes(list, text));
+      return json(list.sort(byKind).map(noteSummary));
+    }
+    if (p === "/api/v1/notes" && m === "POST") {
+      try {
+        const b = await body<NoteCreateBody>();
+        const id = checkNoteId(b.id);
+        if (notes.has(id)) throw new NoteError(`заметка ${id} уже есть`, "conflict");
+        return json(writeNote(id, b, null));
+      } catch (e) {
+        return noteErr(e);
+      }
+    }
+    r = /^\/api\/v1\/notes\/([^/]+)(?:\/revisions(?:\/(\d+))?)?$/.exec(p);
+    if (r) {
+      const id = decodeURIComponent(r[1]!);
+      const isRev = p.includes("/revisions");
+      const cur = notes.get(id) ?? null;
+      try {
+        if (isRev) {
+          const list = revisions.get(id);
+          if (!list) throw new NoteError("нет такой заметки", "not_found");
+          if (!r[2]) return json(list.map((x) => x.item));
+          const v = list.find((x) => x.item.rev === Number(r![2]));
+          if (!v) throw new NoteError(`нет версии ${r[2]}`, "not_found");
+          if (!v.note) throw new NoteError(`версия ${r[2]} — отметка удаления`, "not_found");
+          return json({ ...v.note, historic: true });
+        }
+        if (!cur) throw new NoteError("нет такой заметки", "not_found");
+        if (m === "GET") return json(cur);
+        if (m === "PATCH") {
+          const b = await body<NotePatchBody>();
+          if (b.baseRev != null && b.baseRev !== cur.rev)
+            throw new NoteError(`заметку ${id} уже изменили: текущая версия ${cur.rev} (${cur.updatedBy ?? "?"}), а правка сделана от ${b.baseRev}`, "conflict");
+          if (b.body !== undefined && b.edits !== undefined) throw new NoteError("body и edits взаимоисключающи");
+          const nextBody = b.edits ? applyEdits(cur.body, b.edits) : b.body;
+          return json(writeNote(id, { ...b, body: nextBody }, cur));
+        }
+        if (m === "DELETE") {
+          const base = url.searchParams.get("baseRev");
+          if (base && Number(base) !== cur.rev) throw new NoteError(`заметку ${id} уже изменили (версия ${cur.rev})`, "conflict");
+          notes.delete(id);
+          saveRev({ ...cur, rev: cur.rev + 1, updatedAt: NOW(), updatedBy: "user:admin" }, true);
+          ev(NOW(), "info", "note.deleted", `Заметка «${cur.title}» удалена`, { message: `${id}, версия ${cur.rev + 1}`, actor: "user:admin" });
+          return json({ ok: true });
+        }
+      } catch (e) {
+        return noteErr(e);
+      }
     }
 
     // ---- settings ----

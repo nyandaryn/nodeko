@@ -51,8 +51,13 @@ recent errors, events. It deliberately does nothing else.
   restart doesn't page you.
 - **Telegram notifications** — server offline, service down, check failed, thresholds (CPU, RAM, disk),
   recovery, expiring certificates. Each kind can be switched off.
-- **Built for AI agents** — a full REST API and an **MCP server** (13 tools) so an agent can read
+- **Built for AI agents** — a full REST API and an **MCP server** (17 tools) so an agent can read
   everything *and* configure nodeko itself: rename and group services, add checks, tune thresholds.
+- **Knowledge base for your infrastructure** — markdown notes about servers, projects and procedures
+  (where a project lives, how to deploy and roll back, gotchas), linked to servers and services and shown
+  next to them. Agents get a table of contents in the MCP instructions, search and read notes, and keep
+  them up to date with small optimistic-locked edits. Every change is versioned; anything that looks like
+  a secret (private keys, API tokens, passwords in URLs or assignments) is rejected.
 - **Production-grade UI** — dark and light themes, responsive down to phone width, charts by uPlot.
 
 <table>
@@ -120,6 +125,9 @@ nodeko is meant to be exposed to the internet, so the agent ↔ hub link does no
   a JSON body. Strict CSP, no third-party assets.
 - **API tokens** are scoped `read` or `admin` and stored hashed. Tokens, passkeys, sessions and the
   password can only be managed from a logged-in browser — never with a token.
+- **Notes never hold secrets.** The hub refuses note text that looks like a key, token or password and
+  asks to write *where* the secret is kept instead. Notes are readable with a `read` token, so treat them
+  as internal documentation, not a vault.
 - The hub listens on `127.0.0.1` only; put it behind a reverse proxy or a Cloudflare Tunnel.
 
 ## Quick start
@@ -175,6 +183,34 @@ claude mcp add --transport http nodeko https://nodeko.example.com/mcp \
 Any MCP client with Streamable HTTP support works. Plain REST is available too; agent-oriented docs are
 served at `GET /api/v1/docs`, and the full contract lives in [`src/shared/api.ts`](src/shared/api.ts).
 
+#### Knowledge base
+
+Keep the "how is this deployed" knowledge in nodeko instead of scattered notes, so every agent finds it
+in one place:
+
+- `nodeko_notes` — table of contents or search (`q`), filters by kind, tag, server or service;
+- `nodeko_note` — the markdown text with live status of linked servers/services, older versions, history;
+- `nodeko_write_note` / `nodeko_delete_note` — create, edit (whole text or exact `edits`) and delete with
+  `baseRev`, so two agents can't silently overwrite each other.
+
+Note kinds: `server`, `project`, `runbook`, `reference`; `[[id]]` links one note to another. The MCP
+instructions list every note id, and `nodeko_server` / `nodeko_service` include `linkedNotes`.
+Bulk import/export uses markdown files with YAML front matter (`bun run admin notes:import|notes:export`):
+
+```markdown
+---
+id: shop
+kind: project
+title: "Shop — deploy"
+summary: "where it runs, how to deploy and roll back"
+tags: ["bun"]
+servers: ["atlas"]
+services: ["atlas/shop-api", "atlas/shop-web"]
+---
+# Shop
+…
+```
+
 ## Configuration
 
 Environment variables of the hub (`~/.config/nodeko/hub.env`):
@@ -200,6 +236,8 @@ bun run admin token:revoke <id|name>
 bun run admin server:add <id> [name]             # enrollment token + install command
 bun run admin sessions:revoke                    # sign out everywhere
 bun run admin hub:key                            # hub public key and fingerprint
+bun run admin notes:import <file.md|dir>… [--dry-run]  # knowledge base from markdown + front matter
+bun run admin notes:export <dir>                 # every note to <dir>/<id>.md (backup, offline editing)
 ```
 
 ## Development

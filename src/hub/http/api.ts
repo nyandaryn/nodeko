@@ -1,4 +1,4 @@
-import type { AuthState, CheckBody, EventLevel, ServerCreateBody, ServerPatchBody, ServicePatchBody, SettingsPatch } from "../../shared/api.ts";
+import type { AuthState, CheckBody, EventLevel, NoteCreateBody, NotePatchBody, ServerCreateBody, ServerPatchBody, ServicePatchBody, SettingsPatch } from "../../shared/api.ts";
 import {
   clearSessionCookie,
   createSession,
@@ -27,6 +27,7 @@ import {
 } from "../auth/passkeys.ts";
 import { createCheck, deleteCheck, getCheckRow, updateCheck } from "../checks.ts";
 import { addEvent, listEvents } from "../events.ts";
+import { createNote, deleteNote, getNote, getRevision, listNotes, listRevisions, patchNote } from "../notes.ts";
 import { sendTelegram } from "../notify.ts";
 import { checkList, checkResults, checkSummary, invalidateOverview, isRange, overview, serverDetail, serverMetrics, serviceDetail, serviceLogs, serviceMetrics } from "../queries.ts";
 import { createServer, deleteServer, patchServer, reEnroll } from "../servers.ts";
@@ -217,6 +218,23 @@ api.get("/api/v1/events", "read", (c) => {
     level: level ?? undefined,
   });
 });
+
+// ---------- база знаний ----------
+
+const q = (c: Ctx, k: string) => c.url.searchParams.get(k) ?? undefined;
+
+api.get("/api/v1/notes", "read", (c) =>
+  listNotes({ q: q(c, "q"), kind: q(c, "kind"), tag: q(c, "tag"), server: q(c, "server"), service: q(c, "service") }),
+);
+api.get("/api/v1/notes/:id", "read", (c) => getNote(c.params.id!) ?? notFoundThrow("нет такой заметки"));
+api.post("/api/v1/notes", "admin", async (c) => createNote(await c.json<NoteCreateBody>(), c.actor));
+api.patch("/api/v1/notes/:id", "admin", async (c) => patchNote(c.params.id!, await c.json<NotePatchBody>(), c.actor));
+api.del("/api/v1/notes/:id", "admin", (c) => {
+  deleteNote(c.params.id!, c.actor, intQ(c, "baseRev"));
+  return ok;
+});
+api.get("/api/v1/notes/:id/revisions", "read", (c) => listRevisions(c.params.id!));
+api.get("/api/v1/notes/:id/revisions/:rev", "read", (c) => getRevision(c.params.id!, idNum(c, "rev")));
 
 // ---------- настройки ----------
 

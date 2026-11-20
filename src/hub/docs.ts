@@ -35,6 +35,9 @@ export function apiDocs(): string {
 | GET /api/v1/checks, /api/v1/checks/:id, /api/v1/checks/:id/results?range= | проверки и история (ms, up) |
 | GET /api/v1/events?limit=&before=&since=&server=&service=&check=&level= | журнал, новые первыми |
 | GET /api/v1/settings | настройки (токен бота не раскрывается) |
+| GET /api/v1/notes?q=&kind=&tag=&server=&service= | база знаний: оглавление или поиск (q) со сниппетами |
+| GET /api/v1/notes/:id | заметка: markdown + метаданные (rev — текущая версия) |
+| GET /api/v1/notes/:id/revisions, /api/v1/notes/:id/revisions/:rev | история версий и содержимое версии |
 
 ## Изменения (admin)
 | | |
@@ -49,8 +52,17 @@ export function apiDocs(): string {
 | PATCH /api/v1/checks/:id, DELETE /api/v1/checks/:id | |
 | PATCH /api/v1/settings | частичный объект настроек (см. GET) + notify.telegram.botToken для записи |
 | POST /api/v1/settings/notify/test | тестовое сообщение в Telegram |
+| POST /api/v1/notes | {id, kind (server\\|project\\|runbook\\|reference), title, summary?, tags?, servers?, services? ("<server>/<имя>"), body} |
+| PATCH /api/v1/notes/:id | {baseRev?, kind?, title?, summary?, tags?, servers?, services?, body? \\| edits? [{old, new}]}; устаревший baseRev → 409 |
+| DELETE /api/v1/notes/:id?baseRev= | удалить (история версий остаётся) |
 
 Токены, passkeys, сессии и пароль меняются только из веб-сессии.
+
+## База знаний
+Markdown-заметки об инфраструктуре: где и как развёрнут проект, что стоит на сервере, процедуры. Привязываются к
+серверам (\`servers\`) и сервисам (\`services\`: "<server>/<имя>"), видны в деталях сервера/сервиса (\`linkedNotes\`).
+Ссылка на другую заметку — \`[[id]]\`. Каждое изменение — новая версия. Текст, похожий на секрет (ключ, токен,
+пароль в URL или присваивании), отклоняется: в заметке пишут, где секрет лежит, а не его значение.
 
 ## Агент на сервере
 Ставится командой из ответа POST /api/v1/servers (\`curl -fsSL ${base}/install/agent.sh | sh -s -- --server <id> --token <токен>\`),

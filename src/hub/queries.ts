@@ -20,6 +20,7 @@ import { allCheckRows, effectiveCheckStatus, getCheckRow, toCheckSummary } from 
 import { HUB_VERSION } from "./config.ts";
 import { db, parseJson } from "./db.ts";
 import { listEvents } from "./events.ts";
+import { notesForServer, notesForService } from "./notes.ts";
 import { computeGroups, live, roleOf, semverLess, type CheckRow, type ServerAlerts, type ServerRow, type ServiceRow } from "./model.ts";
 import { effectiveThresholds, getSettings } from "./settings.ts";
 
@@ -188,6 +189,7 @@ export function serverDetail(id: string): ServerDetail | null {
     remoteAddr: l?.ip ?? null,
     connectedAt: l?.connectedAt ?? null,
     rtt: l?.rtt ?? null,
+    linkedNotes: notesForServer(id),
   };
 }
 
@@ -328,6 +330,7 @@ export function serviceDetail(id: number): ServiceDetail | null {
     recentErrors: serviceLogs(id, 30),
     recentEvents: listEvents({ serviceId: id, limit: 20 }),
     errorsHourly: Array.from({ length: 24 }, (_, i) => hm.get(hourNow - 23 + i) ?? 0),
+    linkedNotes: notesForService(r.server_id, r.name, r.display_name),
   };
 }
 

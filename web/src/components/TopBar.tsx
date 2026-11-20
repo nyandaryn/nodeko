@@ -1,4 +1,4 @@
-import { Bell, ListTree, LogOut, Moon, Settings, Sun } from "lucide-react";
+import { Bell, BookOpenText, ListTree, LogOut, Moon, Settings, Sun } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { api } from "../lib/api.ts";
 import { qk, queryClient, useAuth, useOverview } from "../lib/queries.ts";
@@ -8,6 +8,7 @@ import { Logo } from "./Logo.tsx";
 const NAV = [
   { href: "/", label: "Дерево", icon: ListTree, match: (l: string) => l === "/" || /^\/(s|svc|chk)\//.test(l) },
   { href: "/events", label: "События", icon: Bell, match: (l: string) => l.startsWith("/events") },
+  { href: "/notes", label: "Заметки", icon: BookOpenText, match: (l: string) => l.startsWith("/notes") },
   { href: "/settings", label: "Настройки", icon: Settings, match: (l: string) => l.startsWith("/settings") },
 ];
 

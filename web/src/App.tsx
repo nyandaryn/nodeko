@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Route, Switch } from "wouter";
 import { LogoMark } from "./components/Logo.tsx";
 import { TopBar } from "./components/TopBar.tsx";
@@ -10,6 +10,9 @@ import { EventsPage } from "./pages/EventsPage.tsx";
 import { LoginPage } from "./pages/LoginPage.tsx";
 import { SettingsPage } from "./pages/SettingsPage.tsx";
 import { TreePage } from "./pages/TreePage.tsx";
+
+// markdown-рендер тянет заметную часть бандла — грузим страницу заметок по требованию
+const NotesPage = lazy(() => import("./pages/NotesPage.tsx").then((m) => ({ default: m.NotesPage })));
 
 function Gate() {
   const auth = useAuth();
@@ -47,6 +50,11 @@ function Gate() {
       <div className="relative min-h-0 flex-1">
         <Switch>
           <Route path="/events" component={EventsPage} />
+          <Route path={/^\/notes(?:\/.*)?$/}>
+            <Suspense fallback={null}>
+              <NotesPage />
+            </Suspense>
+          </Route>
           <Route path="/settings" component={SettingsPage} />
           <Route path="/settings/:section" component={SettingsPage} />
           <Route>

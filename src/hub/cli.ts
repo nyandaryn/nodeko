@@ -8,11 +8,17 @@
  *   bun run admin server:add <id> [name]               сервер + токен регистрации агента
  *   bun run admin sessions:revoke                      завершить все сессии
  *   bun run admin hub:key                              публичный ключ хаба и отпечаток
+ *   bun run admin notes:import <файл.md|каталог>… [--dry-run]   заметки из markdown с frontmatter (создать/обновить)
+ *   bun run admin notes:export <каталог>               все заметки в <каталог>/<id>.md
  */
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { createToken, createUser, deleteToken, listTokens, setPassword, userByName, userCount } from "./auth/core.ts";
 import { db } from "./db.ts";
 import { hubFingerprint, hubPublicKey } from "./identity.ts";
+import { getNote, listNotes, upsertNote } from "./notes.ts";
+import { parseNoteFile, serializeNote } from "./notes-io.ts";
 import { createServer } from "./servers.ts";
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -91,7 +97,49 @@ switch (cmd) {
   case "hub:key":
     console.log(`${hubPublicKey}\n${hubFingerprint}`);
     break;
+  case "notes:import": {
+    if (!positional.length) die("укажите файлы .md или каталоги");
+    const files = positional.flatMap((p) =>
+      fs.statSync(p).isDirectory()
+        ? fs
+            .readdirSync(p)
+            .filter((f) => f.endsWith(".md") && !/^[A-Z]+\.md$/.test(f))
+            .sort()
+            .map((f) => path.join(p, f))
+        : [p],
+    );
+    const dry = flag("--dry-run");
+    let failed = 0;
+    for (const f of files) {
+      try {
+        const body = parseNoteFile(fs.readFileSync(f, "utf8"), path.basename(f, ".md"));
+        if (dry) {
+          const cur = getNote(body.id);
+          console.log(`${cur ? "обновить" : "создать "}  ${body.id}  (${f})`);
+          continue;
+        }
+        const r = upsertNote(body, "cli");
+        console.log(`${r.action.padEnd(9)}  ${r.note.id}  v${r.note.rev}`);
+      } catch (e) {
+        failed++;
+        console.error(`ошибка    ${f}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (failed) die(`не импортировано: ${failed} из ${files.length}`);
+    break;
+  }
+  case "notes:export": {
+    const dir = positional[0] ?? die("укажите каталог");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const all = listNotes();
+    for (const s of all) {
+      const n = getNote(s.id)!;
+      fs.writeFileSync(path.join(dir, `${n.id}.md`), serializeNote(n), { mode: 0o600 });
+    }
+    console.log(`выгружено заметок: ${all.length} → ${dir}`);
+    break;
+  }
   default:
-    console.log("команды: user:create, user:password, token:create, token:list, token:revoke, server:add, sessions:revoke, hub:key");
+    console.log("команды: user:create, user:password, token:create, token:list, token:revoke, server:add, sessions:revoke, hub:key, notes:import, notes:export");
     process.exit(cmd ? 1 : 0);
 }

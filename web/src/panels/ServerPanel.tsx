@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Activity, ArrowDownUp, Clock3, Cpu, Eye, Gauge, HardDrive, KeyRound, MemoryStick, Radio, Server, Trash, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
+import { LinkedNotes } from "../components/LinkedNotes.tsx";
 import { EnrollmentView, ThresholdsForm, draftFrom, draftToOverrides, type ThresholdDraft } from "../components/Enrollment.tsx";
 import { RangePicker } from "../components/RangePicker.tsx";
 import { ChartCard, TimeChart } from "../components/TimeChart.tsx";
@@ -119,6 +120,8 @@ function Overview({ s }: { s: ServerDetail }) {
         <Stat label="Пинг" icon={<Radio size={12} />} value={n?.ping != null ? ms(n.ping) : "—"} sub="до интернета" />
         <Stat label="Аптайм" icon={<Clock3 size={12} />} value={n ? dur(n.uptime * 1000) : "—"} sub={n ? `${n.procs} процессов` : undefined} />
       </div>
+
+      <LinkedNotes notes={s.linkedNotes} />
 
       {s.filesystems.length > 0 && (
         <Section title="Файловые системы">

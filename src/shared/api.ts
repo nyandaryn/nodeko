@@ -45,6 +45,13 @@
  *   PATCH  /v1/passkeys/:id     {name}      → PasskeyItem
  *   DELETE /v1/passkeys/:id                 → {ok}
  *   POST   /v1/account/password {current, next} → {ok}
+ *   GET    /v1/notes?q=&kind=&tag=&server=&service= → NoteSummary[]   (база знаний; q — поиск)
+ *   GET    /v1/notes/:id                    → Note
+ *   POST   /v1/notes            NoteCreateBody → Note             (409, если id занят)
+ *   PATCH  /v1/notes/:id        NotePatchBody  → Note             (409 при устаревшем baseRev)
+ *   DELETE /v1/notes/:id?baseRev=           → {ok}   (история версий сохраняется)
+ *   GET    /v1/notes/:id/revisions          → NoteRevisionItem[]  (новые первыми; работает и для удалённой)
+ *   GET    /v1/notes/:id/revisions/:rev     → Note   (содержимое версии)
  *   GET    /v1/docs                         → text/markdown — описание API для ИИ-агентов
  *
  * Прочее: POST /mcp — MCP (Streamable HTTP, Bearer-токен); GET /agent — WebSocket агентов;
@@ -245,6 +252,8 @@ export interface ServerDetail extends ServerSummary {
   connectedAt: number | null;
   /** RTT хаб↔агент, ms */
   rtt: number | null;
+  /** заметки базы знаний, привязанные к серверу (или к его сервисам) */
+  linkedNotes: NoteRef[];
 }
 
 export type MetricsRange = "1h" | "6h" | "24h" | "7d" | "30d" | "1y";
@@ -345,6 +354,8 @@ export interface ServiceDetail extends ServiceSummary {
   recentEvents: EventItem[];
   /** ошибок за 24ч по часам, старые первыми (24 значения) */
   errorsHourly: number[];
+  /** заметки базы знаний, привязанные к сервису или его серверу */
+  linkedNotes: NoteRef[];
 }
 
 export interface ServicePatchBody {
@@ -500,4 +511,90 @@ export interface PasskeyItem {
   /** singleDevice | multiDevice */
   deviceType: string | null;
   backedUp: boolean;
+}
+
+// ---------- база знаний (заметки) ----------
+
+/**
+ * Заметка базы знаний — markdown-документ об инфраструктуре: где и как развёрнут проект, что на сервере,
+ * процедуры. Читают люди и ИИ-агенты (MCP). Секреты в заметках запрещены — хаб отклоняет текст,
+ * похожий на ключ/токен/пароль; в заметке пишут, где секрет лежит.
+ * Ссылка на другую заметку в тексте — `[[id]]`.
+ */
+export type NoteKind = "server" | "project" | "runbook" | "reference";
+export const NOTE_KINDS: NoteKind[] = ["server", "project", "runbook", "reference"];
+
+export interface NoteRef {
+  id: string;
+  kind: NoteKind;
+  title: string;
+  summary: string;
+}
+
+export interface NoteSummary extends NoteRef {
+  tags: string[];
+  /** id серверов */
+  servers: string[];
+  /** сервисы: "<server>/<имя сервиса>" */
+  services: string[];
+  rev: number;
+  updatedAt: number;
+  updatedBy: string | null;
+  /** размер текста, байты */
+  size: number;
+  /** при поиске: фрагмент с совпадением */
+  snippet?: string;
+  /** при поиске: релевантность (больше — лучше) */
+  score?: number;
+}
+
+export interface Note extends NoteSummary {
+  body: string;
+  createdAt: number;
+  /** true — это историческая версия (GET …/revisions/:rev), а не текущая */
+  historic?: boolean;
+}
+
+export interface NoteCreateBody {
+  /** [a-z0-9][a-z0-9._-]*, до 64 */
+  id: string;
+  kind: NoteKind;
+  title: string;
+  summary?: string;
+  tags?: string[];
+  servers?: string[];
+  services?: string[];
+  body: string;
+}
+
+export interface NoteEdit {
+  /** фрагмент текущего текста; должен встречаться ровно один раз */
+  old: string;
+  /** замена ("" — удалить фрагмент) */
+  new: string;
+}
+
+export interface NotePatchBody {
+  /** ожидаемая текущая версия; не совпала — 409 conflict (кто-то изменил заметку раньше) */
+  baseRev?: number;
+  kind?: NoteKind;
+  title?: string;
+  summary?: string;
+  tags?: string[];
+  servers?: string[];
+  services?: string[];
+  /** новый текст целиком (взаимоисключающе с edits) */
+  body?: string;
+  /** точечные замены в тексте, применяются по порядку */
+  edits?: NoteEdit[];
+}
+
+export interface NoteRevisionItem {
+  rev: number;
+  ts: number;
+  actor: string | null;
+  title: string;
+  size: number;
+  /** версия-отметка удаления */
+  deleted: boolean;
 }
